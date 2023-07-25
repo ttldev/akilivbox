@@ -1,0 +1,418 @@
+#Verify KVM
+vagrant plugin list
+kvm-ok
+
+vagrant halt to stop.
+
+# add user kvm,libvirt
+sudo usermod -aG libvirt,kvm $USER
+
+A Containerizing a Windows Virtual Desktop  — with RDP Access — on a Linux Podman Platform with KVM Hypervisor.
+
+To be accessed to access over HTTP/HTTPS using a platform like Guacamole,
+
+install each Windows machine as a virtual machine inside a single Linux container
+
+Even though a container with a VM in it takes more disk space than other containers, 
+
+the efficiency in saving disk space when we have many containerized VMs is still high compared to running un-containerized VMs.
+
+Architecture Overview
+Our ultimate goal here is to have a fully running Windows OS, accessible through RDP, and containerized and managed by Docker daemon.
+
+
+The Windows Virtual Machine: 
+Windows 10 Vagrant Box with RDP
+
+A Hypervisor on the Podman Image: 
+- KVM-QEMU Hypervisor
+- Ubuntu Linux Container
+
+Podman Daemon
+- containerization platform installed on the Base OS.
+
+
+The Base Operating System: 
+- it will be the main platform hosting everything else.
+- Debian/Ubuntu Linux Base OS
+
+
+Building the Image without a Dockerfile
+
+Required Parameters
+
+ — device=/dev/kvm 			# will map the device /dev/kvm in the main OS inside the Container.
+
+— device=/dev/net/tun 			# will map the device /dev/net/tun in the main OS inside the Container.
+
+-v /sys/fs/cgroup:/sys/fs/cgroup:rw 	# will map the directory /sys/fs/cgroup in the main OS inside the Container, and the Container will have read-write permissions on that directory.
+
+— cap-add=NET_ADMIN 			# will add network admin capabilities to the Container.
+
+— cap-add=SYS_ADMIN 			# will add system admin capabilities to the Containe
+
+
+# Vagrant-Libvirt Package Requirement
+vagrant libvirt-daemon-system libvirt-dev  
+net-tools iputils-ping nmap tcdump  curl wget git  nano mc vim mtr jq 
+
+# Change Group ownership of /dev/kvm
+chown root:kvm /dev/kvm
+
+# 
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt update && sudo apt install packer
+
+vagrant plugin install vagrant-libvirt
+
+
+mkdir /win10
+
+cd /win10
+
+# the vagrant init command will download a Vagrantfile which contains the instructions fof building the Vagrant box.
+vagrant init peru/windows-10-enterprise-x64-eval
+
+# the vagrant up command will build the box. 
+VAGRANT_DEFAULT_PROVIDER=libvirt vagrant up
+
+# To access the box over RDP enter "vagrant rdp"  get the IP address of the Vagrant box:
+vagrant rdp
+
+# Install an appropriate RDP client `xfreerdp` or `rdesktop` in order to connect via RDP to the Vagrant environment.
+apt install  xfreerdp`rdesktop`
+
+# Set up firewall port forwarding rules:
+# Add the following rules to NAT/Port Forward connections from the Host OS to the container on port 3389 to be forwarded to the Vagrant Box on port 3389:
+
+Host	  Inbound interface podmanx 
+	  IPAddress 10.0.0.1
+
+	  Outbound Interface
+	  IPAdress 
+Container
+	  Inbound Interface 
+	  IPAddress
+
+Vagrant BOX
+	  Interface
+	  IPAddress
+	  Port
+
+Add the following rules to NAT/Port Forward connections from the main OS to the container on port 3389 to be forwarded to the Vagrant Box on port 3389:
+
+root@<container_id>:/# iptables -A FORWARD -i eth0 -o virbr1 -p tcp --syn --dport 3389 -m conntrack --ctstate NEW -j ACCEPT
+
+root@<container_id>:/# iptables -A FORWARD -i eth0 -o virbr1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+root@<container_id>:/# iptables -A FORWARD -i virbr1 -o eth0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+root@<container_id>:/# iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 3389 -j DNAT --to-destination 192.168.121.68
+
+root@<container_id>:/# iptables -t nat -A POSTROUTING -o virbr1 -p tcp --dport 3389 -d 192.168.121.68 -j SNAT --to-source 192.168.121.1
+
+After that, we should remove the rules that reject all traffic to/from virb1 interface; these rules take precedent over our newly inserted rules:
+
+root@<container_id>:/# iptables -D FORWARD -o virbr1 -j REJECT --reject-with icmp-port-unreachable
+
+root@<container_id>:/# iptables -D FORWARD -i virbr1 -j REJECT --reject-with icmp-port-unreachable
+
+root@<container_id>:/# iptables -D FORWARD -o virbr0 -j REJECT --reject-with icmp-port-unreachable
+
+root@<container_id>:/# iptables -D FORWARD -i virbr0 -j REJECT --reject-with icmp-port-unreachable
+
+if you mess up the iptables, or if the communication is problematic later, you may want to clear up all tables and then add the rules (mentioned above) on a clean slate. To clear the iptables, issue the following:
+
+root@<container_id>:/# sudo iptables-save > $HOME/firewall.txt
+
+root@<container_id>:/# sudo iptables -X
+
+root@<container_id>:/# sudo iptables -t nat -F
+
+root@<container_id>:/# sudo iptables -t nat -X
+
+root@<container_id>:/# sudo iptables -t mangle -F
+
+root@<container_id>:/# sudo iptables -t mangle -X
+
+root@<container_id>:/# sudo iptables -P INPUT ACCEPT
+
+root@<container_id>:/# sudo iptables -P FORWARD ACCEPT
+
+root@<container_id>:/# sudo iptables -P OUTPUT ACCEPT
+
+To commit the changes to a new Image, we need first to exit the Container:
+sudo podman commit <container_id> ubuntukvm
+
+
+Containerfile
+FROM ubuntu:18.04
+RUN apt-get update -y
+RUN apt-get install -y qemu-kvm libvirt-daemon-system libvirt-dev
+RUN apt-get install -y linux-image-$(uname -r)
+RUN apt-get install -y curl net-tools jq
+RUN apt-get autoclean
+RUN apt-get autoremove
+#RUN curl -O https://releases.hashicorp.com/vagrant/$(curl -s https://checkpoint-api.hashicorp.com/v1/check/vagrant  | jq -r -M '.current_version')/vagrant_$(curl -s https://checkpoint-api.hashicorp.com/v1/check/vagrant  | jq -r -M '.current_version')_x86_64.deb
+# RUN dpkg -i vagrant_$(curl -s https://checkpoint-api.hashicorp.com/v1/check/vagrant  | jq -r -M '.current_version')_x86_64.deb
+
+RUN vagrant plugin install vagrant-libvirt
+RUN vagrant box add --provider libvirt peru/windows-10-enterprise-x64-eval
+RUN vagrant init peru/windows-10-enterprise-x64-eval
+COPY startup.sh /
+ENTRYPOINT ["/startup.sh"]
+
+
+#!/bin/bash
+set -eou pipefail
+
+chown root:kvm /dev/kvm
+service libvirtd start
+service virtlogd start
+VAGRANT_DEFAULT_PROVIDER=libvirt vagrant up
+iptables-save > $HOME/firewall.txt
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+iptables -A FORWARD -i eth0 -o virbr1 -p tcp --syn --dport 3389 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -i eth0 -o virbr1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -i virbr1 -o eth0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 3389 -j DNAT --to-destination 192.168.121.68
+iptables -t nat -A POSTROUTING -o virbr1 -p tcp --dport 3389 -d 192.168.121.68 -j SNAT --to-source 192.168.121.1
+
+iptables -D FORWARD -o virbr1 -j REJECT --reject-with icmp-port-unreachable
+iptables -D FORWARD -i virbr1 -j REJECT --reject-with icmp-port-unreachable
+iptables -D FORWARD -o virbr0 -j REJECT --reject-with icmp-port-unreachable
+iptables -D FORWARD -i virbr0 -j REJECT --reject-with icmp-port-unreachable
+
+exec "$@"
+
+[3] Build the Container from the Docker file:
+
+sudo chmod +x startup.shsudo docker build -t ubuntukvm:latest -f Dockerfile .
+
+[4] Instantiate a Container and Run it:
+
+sudo docker run --privileged -it --name kvmcontainer1 --device=/dev/kvm --device=/dev/net/tun -v /sys/fs/cgroup:/sys/fs/cgroup:rw --cap-add=NET_ADMIN --cap-add=SYS_ADMIN ubuntukvm bash
+
+Testing the RDP Access
+
+By now, we should be able to access the RDP service on the Windows Vagrant box by connecting to the IP address of the Docker container. To test that port 3389/tcp (RDP) is reachable from the main OS, we will use a simple Nmap command.
+
+First, if you are inside the Docker container, press Ctrl+p+q to put the Container in the background while running; this should return you to the main OS terminal prompt:
+
+root@<container_id>:/win10# <Ctrl+p+q>$ sudo nmap -Pn -p 3389 172.17.0.2
+
+Next, we need to install an RDP client for Linux. A popular one is RDesktop:
+
+sudo apt-get install rdesktop
+
+Finally, we can access the Windows VM:
+
+sudo rdesktop 172.17.0.2
+
+The Windows Vagrant box that we have installed has two built-in accounts:
+
+    Username: vagrant Password: vagrant
+    Username: Administrator Password: vagrant
+
+# create a workdir
+
+mkdir -p  $pwd/build/vagrant && cd $pwd/build/vagrant
+
+cat <EOF>> Containerfile
+FROM ubuntu:23.04
+
+ENV DEBIAN_FRONTEND noninteractive
+ENV TERM xterm-256color
+
+RUN apt-get update -y && \
+    apt-get install -y \
+    qemu-kvm \
+    build-essential \
+    libvirt-daemon-system \
+    libvirt-dev \
+    linux-image-$(uname -r) \
+    curl \
+    net-tools \
+    jq && \
+    apt-get autoremove -y && \
+    apt-get clean
+
+
+RUN curl -O https://releases.hashicorp.com/vagrant/$(curl -s https://checkpoint-api.hashicorp.com/v1/check/vagrant  | jq -r -M '.current_version')/vagrant_$(curl -s https://checkpoint-api.hashicorp.com/v1/check/vagrant  | jq -r -M '.current_version')_x86_64.deb && \
+	dpkg -i vagrant_$(curl -s https://checkpoint-api.hashicorp.com/v1/check/vagrant  | jq -r -M '.current_version')_x86_64.deb && \
+	vagrant plugin install vagrant-libvirt && \
+	vagrant box add --provider libvirt peru/windows-server-2016-standard-x64-eval && \
+	vagrant init peru/windows-server-2016-standard-x64-eval
+
+COPY Vagrantfile /
+COPY startup.sh /
+
+ENTRYPOINT ["/startup.sh"]
+
+CMD ["/bin/bash"]
+EOF
+
+
+cat <EOF>>  startup.sh
+#!/bin/bash
+set -eou pipefail
+
+chown root:kvm /dev/kvm
+
+/usr/sbin/libvirtd --daemon
+/usr/sbin/virtlogd --daemon
+
+VAGRANT_DEFAULT_PROVIDER=libvirt vagrant up
+
+iptables-save > /root/firewall.txt
+iptables -A LIBVIRT_FWI -i eth0 -o virbr1 -p tcp --syn --dport 3389 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A LIBVIRT_FWI -i eth0 -o virbr1 -p tcp --syn --dport 445 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A LIBVIRT_FWI -i eth0 -o virbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A LIBVIRT_FWI -i virbr0 -o eth0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 3389 -j DNAT --to-destination 192.168.121.5
+iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 445 -j DNAT --to-destination 192.168.121.5
+iptables -t nat -A LIBVIRT_PRT -o virbr1 -p tcp --dport 3389 -d 192.168.121.5 -j SNAT --to-source 192.168.121.1
+iptables -t nat -A LIBVIRT_PRT -o virbr1 -p tcp --dport 445 -d 192.168.121.5 -j SNAT --to-source 192.168.121.1
+
+iptables -D LIBVIRT_FWI -o virbr1 -j REJECT --reject-with icmp-port-unreachable
+iptables -D LIBVIRT_FWI -o virbr0 -j REJECT --reject-with icmp-port-unreachable
+iptables -D LIBVIRT_FWO -i virbr1 -j REJECT --reject-with icmp-port-unreachable
+iptables -D LIBVIRT_FWO -i virbr0 -j REJECT --reject-with icmp-port-unreachable
+
+exec "$@"
+EOF
+
+
+ cat <EOF>> vagrantfile
+Vagrant.configure("2") do |config|
+
+  config.vm.box = "peru/windows-server-2016-standard-x64-eval"
+  config.vm.network "private_network", ip: "192.168.121.5"
+  config.vm.network "forwarded_port", guest: 445, host: 445
+  config.vm.provision "shell", inline: "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"
+  #config.vm.network "forwarded_port", guest: 139, host: 139
+  #config.vm.network "forwarded_port", guest: 137, host: 137
+  #config.vm.network "forwarded_port", guest: 135, host: 135
+  #config.vm.boot_timeout = 600
+  #config.vm.base_address = "192.168.121.10"
+  #config.winrm.host = "192.168.121.10"
+  #config.winrm.timeout = 3600
+
+end
+EOF
+
+
+Create Vagrant VM Template
+
+usermod -aG sudo vagrant
+
+
+## Create your own Custom Vagrant Box of Debian 12
+
+# Install Utils packages
+apt update &  apt install -y  sudo mc vim net-tools iputils-ping nmap lsof tcpdump git curl wget mtr iproute2 htop
+
+# change tab bell /etc/inputrc
+#uncomment the line 
+set bell-sytle none
+
+# verify timezone and locale setting or change setting dpkg-reconfigure timezone/locale
+timezonectl && localectl 
+
+# Make a normal user  as  PowerUser
+
+# Add user to sudo group
+usermod -aG sudo vagrant
+
+#   Create  PowerUser configuration file
+visudo -f /etc/sudoers.d/vagrant
+
+cat <EOF>> /etc/sudoers.d/vagrant
+vagrant ALL=(root) NOPASSWD: ALL
+EOF
+
+#  setup authorized_keys
+
+# change to PowerUser
+su - vagrant
+
+# set  up .ssh dir 
+mkdir -m 700 .ssh
+
+# download the public key for the vagrant user
+user wget minus uppercase O
+wget -O .ssh/authorized_key (source of authorized storage)
+wget -O .ssh/authorized_key https://raw.githubusercontent.com/hashicorp/vagrant/master/keys/vagrant.pub
+
+# verify Key
+cat .ssh/authorized_key 
+
+# change key permission to private
+chmond 600 .ssh/authorized_key 
+
+# clear history
+history - c && history -w
+
+poweroff
+
+On Host
+mkdir debian12
+cd debian12
+
+# copy base kvm vm debian12 copy to a new vagrant debian12.box
+vagrant package --base debian12 --output debian12.box
+
+# Add the new vagrant box  to vagrant local list
+vagrant box add debian12.box --name debian12
+
+# remove  vagrant box from default dir
+rm debian12.box
+
+# Verify that New box is available 
+vagrant  box list
+
+## Create a new Vagrantfile
+vagrant init debian12.box
+
+# run the new box
+vagrant up --provider libvirt
+
+
+# check available memory and  disk space
+free -h && df -h /
+
+# exit from the vagrant system
+stop  vagrant halt
+exit vagrant destroy
+
+
+ 
+
+
+ curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+ sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+ sudo apt-get update && sudo apt-get install vagrant
+
+ apt install vagrant-libvirt
+ apt-get build-dep vagrant ruby-libvirt
+ apt-get install qemu libvirt-daemon-system libvirt-clients ebtables dnsmasq-base
+ apt-get install libxslt-dev libxml2-dev libvirt-dev zlib1g-dev ruby-dev
+ apt-get install libguestfs-tools
+ vagrant plugin install vagrant-libvirt
+ 
+ vagrant init fedora/32-cloud-base
+ vagrant up --provider=libvirt
+
+Fetching xml-simple-1.1.9.gem
+Fetching nokogiri-1.15.3-x86_64-linux.gem
+Fetching ruby-libvirt
